@@ -13,13 +13,24 @@ interface WhaleboneConfig {
   accessKey: string;
   secretKey: string;
   baseUrl?: string;
+  maxResults?: number;
+  maxResponseSize?: number;
+  enableTruncation?: boolean;
 }
 
-// Server configuration - you'll need to set these environment variables
+// Response constraints
+const DEFAULT_MAX_RESULTS = 50;
+const DEFAULT_MAX_RESPONSE_SIZE = 50000; // ~50KB of JSON
+const MAX_STRING_LENGTH = 1000; // Max length for individual string fields
+
+// Server configuration - you can adjust these limits via environment variables
 const config: WhaleboneConfig = {
   accessKey: process.env.WHALEBONE_ACCESS_KEY || "",
   secretKey: process.env.WHALEBONE_SECRET_KEY || "",
   baseUrl: process.env.WHALEBONE_BASE_URL || "https://api.whalebone.io/whalebone/2",
+  maxResults: parseInt(process.env.WHALEBONE_MAX_RESULTS || DEFAULT_MAX_RESULTS.toString()),
+  maxResponseSize: parseInt(process.env.WHALEBONE_MAX_RESPONSE_SIZE || DEFAULT_MAX_RESPONSE_SIZE.toString()),
+  enableTruncation: process.env.WHALEBONE_ENABLE_TRUNCATION !== "false", // Default to true
 };
 
 class WhaleboneClient {
@@ -27,6 +38,107 @@ class WhaleboneClient {
 
   constructor(config: WhaleboneConfig) {
     this.config = config;
+  }
+
+  private truncateString(str: string, maxLength: number = MAX_STRING_LENGTH): string {
+    if (!this.config.enableTruncation || str.length <= maxLength) {
+      return str;
+    }
+    return str.substring(0, maxLength) + "... [truncated]";
+  }
+
+  private truncateObject(obj: any): any {
+    if (!this.config.enableTruncation) {
+      return obj;
+    }
+
+    if (typeof obj === 'string') {
+      return this.truncateString(obj);
+    }
+    
+    if (Array.isArray(obj)) {
+      return obj.map(item => this.truncateObject(item));
+    }
+    
+    if (obj && typeof obj === 'object') {
+      const truncated: any = {};
+      for (const [key, value] of Object.entries(obj)) {
+        truncated[key] = this.truncateObject(value);
+      }
+      return truncated;
+    }
+    
+    return obj;
+  }
+
+  private limitResults(data: any, maxResults: number = this.config.maxResults || DEFAULT_MAX_RESULTS): any {
+    if (Array.isArray(data)) {
+      const limited = data.slice(0, maxResults);
+      if (data.length > maxResults) {
+        return {
+          results: limited,
+          total_available: data.length,
+          returned: limited.length,
+          truncated: true,
+          message: `Results limited to ${maxResults} items out of ${data.length} total. Use pagination parameters to access more results.`
+        };
+      }
+      return limited;
+    }
+    
+    // Handle objects that contain arrays (like timeline buckets)
+    if (data && typeof data === 'object') {
+      const result: any = {};
+      for (const [key, value] of Object.entries(data)) {
+        if (Array.isArray(value)) {
+          result[key] = this.limitResults(value, maxResults);
+        } else {
+          result[key] = value;
+        }
+      }
+      return result;
+    }
+    
+    return data;
+  }
+
+  private enforceResponseSize(data: any): any {
+    const jsonString = JSON.stringify(data);
+    const maxSize = this.config.maxResponseSize || DEFAULT_MAX_RESPONSE_SIZE;
+    
+    if (jsonString.length <= maxSize) {
+      return data;
+    }
+
+    // If response is too large, progressively reduce it
+    if (Array.isArray(data)) {
+      const itemSize = Math.floor(jsonString.length / data.length);
+      const maxItems = Math.floor(maxSize / itemSize * 0.8); // 80% safety margin
+      
+      return {
+        results: data.slice(0, Math.max(1, maxItems)),
+        total_available: data.length,
+        returned: Math.max(1, maxItems),
+        truncated: true,
+        message: `Response truncated due to size constraints. Showing ${Math.max(1, maxItems)} of ${data.length} items.`
+      };
+    }
+
+    // For objects, truncate string fields more aggressively
+    return this.truncateObject(data);
+  }
+
+  private processResponse(data: any): any {
+    // First limit the number of results
+    let processed = this.limitResults(data);
+    
+    // Then truncate long strings
+    processed = this.truncateObject(processed);
+    
+    // Finally ensure total response size is manageable
+    processed = this.enforceResponseSize(processed);
+    
+    return processed;
   }
 
   private async makeRequest(endpoint: string, params: Record<string, any> = {}) {
@@ -58,7 +170,8 @@ class WhaleboneClient {
       throw new Error(`Whalebone API error: ${response.status} ${response.statusText}`);
     }
 
-    return await response.json();
+    const rawData = await response.json();
+    return this.processResponse(rawData);
   }
 
   async searchEvents(params: any) {
@@ -106,7 +219,7 @@ class WhaleboneClient {
 const tools: Tool[] = [
   {
     name: "search_events",
-    description: "Search for security events detected by Whalebone",
+    description: "Search for security events detected by Whalebone. Results are automatically limited to prevent context overflow.",
     inputSchema: {
       type: "object",
       properties: {
@@ -121,10 +234,10 @@ const tools: Tool[] = [
         device_id: { type: "array", items: { type: "string" }, description: "Device identifiers" },
         subscription_id: { type: "string", description: "Subscription identifier" },
         action: { type: "string", enum: ["log", "block", "allow"], description: "Event action" },
-        days: { type: "integer", minimum: 1, maximum: 220, description: "Number of days to look back" },
+        days: { type: "integer", minimum: 1, maximum: 220, default: 1, description: "Number of days to look back (default: 1)" },
         hours: { type: "integer", minimum: 1, maximum: 5280, description: "Number of hours to look back" },
-        scroll: { type: "boolean", description: "Enable scrolling for large result sets" },
-        sort: { type: "string", enum: ["asc", "desc"], description: "Sort order" }
+        scroll: { type: "boolean", default: false, description: "Enable scrolling for large result sets (not recommended for context efficiency)" },
+        sort: { type: "string", enum: ["asc", "desc"], default: "desc", description: "Sort order (newest first by default)" }
       }
     }
   },
@@ -185,7 +298,7 @@ const tools: Tool[] = [
   },
   {
     name: "get_dns_timeline",
-    description: "Get DNS traffic timeline",
+    description: "Get DNS traffic timeline. Results are automatically limited and aggregated for context efficiency.",
     inputSchema: {
       type: "object",
       properties: {
@@ -197,7 +310,7 @@ const tools: Tool[] = [
         },
         domain: { type: "string", description: "Second level domain name (supports * wildcard)" },
         query: { type: "string", description: "Complete query string (supports * wildcard)" },
-        days: { type: "integer", minimum: 1, maximum: 14, description: "Number of days to look back" },
+        days: { type: "integer", minimum: 1, maximum: 14, default: 1, description: "Number of days to look back (default: 1)" },
         hours: { type: "integer", minimum: 1, maximum: 336, description: "Number of hours to look back" },
         resolver_id: { type: "integer", description: "ID of the resolver" },
         device_id: { type: "array", items: { type: "string" }, description: "Device identifiers" },
@@ -207,9 +320,10 @@ const tools: Tool[] = [
         aggregate: { 
           type: "string", 
           enum: ["client_ip", "tld", "domain", "query", "answer", "query_type", "device_id", "country"],
-          description: "Aggregate timeline buckets by parameter" 
+          default: "query_type",
+          description: "Aggregate timeline buckets by parameter (default: query_type for efficiency)" 
         },
-        interval: { type: "string", enum: ["hour", "day", "week", "month"], description: "Timeline bucket size" }
+        interval: { type: "string", enum: ["hour", "day", "week", "month"], default: "hour", description: "Timeline bucket size (default: hour)" }
       }
     }
   },
@@ -379,11 +493,19 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       ],
     };
   } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    
+    // Provide helpful context about size limits if relevant
+    let helpfulError = errorMessage;
+    if (errorMessage.includes('too large') || errorMessage.includes('truncated')) {
+      helpfulError += `\n\nTip: Try using more specific filters (date ranges, domains, IPs) or pagination to get smaller result sets.`;
+    }
+    
     return {
       content: [
         {
           type: "text",
-          text: `Error: ${error instanceof Error ? error.message : String(error)}`,
+          text: `Error: ${helpfulError}`,
         },
       ],
       isError: true,
