@@ -206,13 +206,15 @@ class WhaleboneClient {
     return this.makeRequest('/domain/analysis', { fqdn });
   }
 
-  async getAuditLogs(params: any) {
-    return this.makeRequest('/audit/logs', params);
-  }
+  // Privacy-sensitive endpoints - commented out by default
+  // Uncomment these methods if you need access to audit logs or identity protection data
+  // async getAuditLogs(params: any) {
+  //   return this.makeRequest('/audit/logs', params);
+  // }
 
-  async getIdpIncidents(params: any) {
-    return this.makeRequest('/idp/incidents', params);
-  }
+  // async getIdpIncidents(params: any) {
+  //   return this.makeRequest('/idp/incidents', params);
+  // }
 }
 
 // Define available tools
@@ -385,39 +387,39 @@ const tools: Tool[] = [
       required: ["fqdn"]
     }
   },
-  {
-    name: "get_audit_logs",
-    description: "Get audit logs",
-    inputSchema: {
-      type: "object",
-      properties: {
-        resolver_id: { type: "integer", description: "ID of the resolver" },
-        days: { type: "integer", minimum: 1, maximum: 220, description: "Number of days to look back" },
-        hours: { type: "integer", minimum: 1, maximum: 5280, description: "Number of hours to look back" },
-        event: { type: "string", description: "Filter by event type (supports * wildcard)" },
-        category: { type: "string", description: "Filter by category (supports * wildcard)" },
-        result: { type: "string", enum: ["success", "failure"], description: "Filter by result" },
-        rw: { type: "string", enum: ["read", "write"], description: "Filter by action type" },
-        sort: { type: "string", enum: ["asc", "desc"], description: "Sort order" },
-        user: { type: "string", description: "Filter by user" }
-      }
-    }
-  },
-  {
-    name: "get_idp_incidents",
-    description: "List Identity Protection incidents grouped by assets",
-    inputSchema: {
-      type: "object",
-      properties: {
-        subscription_id: { type: "string", description: "Subscription identifier (required for email/phone asset types)" },
-        asset_type: { type: "string", enum: ["email", "phone", "domain"], description: "Type of asset to filter incidents" },
-        asset_value: { type: "string", description: "Specific asset value to filter by" },
-        language: { type: "string", description: "Language code for breach description (default: en)" },
-        limit: { type: "integer", minimum: 1, maximum: 500, description: "Number of rows to return (default: 50)" },
-        scroll_token: { type: "string", description: "Token for pagination" }
-      }
-    }
-  }
+  // {
+  //   name: "get_audit_logs",
+  //   description: "Get audit logs",
+  //   inputSchema: {
+  //     type: "object",
+  //     properties: {
+  //       resolver_id: { type: "integer", description: "ID of the resolver" },
+  //       days: { type: "integer", minimum: 1, maximum: 220, description: "Number of days to look back" },
+  //       hours: { type: "integer", minimum: 1, maximum: 5280, description: "Number of hours to look back" },
+  //       event: { type: "string", description: "Filter by event type (supports * wildcard)" },
+  //       category: { type: "string", description: "Filter by category (supports * wildcard)" },
+  //       result: { type: "string", enum: ["success", "failure"], description: "Filter by result" },
+  //       rw: { type: "string", enum: ["read", "write"], description: "Filter by action type" },
+  //       sort: { type: "string", enum: ["asc", "desc"], description: "Sort order" },
+  //       user: { type: "string", description: "Filter by user" }
+  //     }
+  //   }
+  // },
+  // {
+  //   name: "get_idp_incidents",
+  //   description: "List Identity Protection incidents grouped by assets",
+  //   inputSchema: {
+  //     type: "object",
+  //     properties: {
+  //       subscription_id: { type: "string", description: "Subscription identifier (required for email/phone asset types)" },
+  //       asset_type: { type: "string", enum: ["email", "phone", "domain"], description: "Type of asset to filter incidents" },
+  //       asset_value: { type: "string", description: "Specific asset value to filter by" },
+  //       language: { type: "string", description: "Language code for breach description (default: en)" },
+  //       limit: { type: "integer", minimum: 1, maximum: 500, description: "Number of rows to return (default: 50)" },
+  //       scroll_token: { type: "string", description: "Token for pagination" }
+  //     }
+  //   }
+  // }
 ];
 
 // Create the server
@@ -474,12 +476,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
         result = await whalebone.getDomainAnalysis(toolArgs.fqdn as string);
         break;
-      case "get_audit_logs":
-        result = await whalebone.getAuditLogs(toolArgs);
-        break;
-      case "get_idp_incidents":
-        result = await whalebone.getIdpIncidents(toolArgs);
-        break;
+      // Privacy-sensitive endpoints are commented out by default
+      // Uncomment these in your local deployment if you need access to audit logs or identity data
+      // case "get_audit_logs":
+      //   result = await whalebone.getAuditLogs(toolArgs);
+      //   break;
+      // case "get_idp_incidents":
+      //   result = await whalebone.getIdpIncidents(toolArgs);
+      //   break;
       default:
         throw new Error(`Unknown tool: ${name}`);
     }
